@@ -1,80 +1,74 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import PouchDB from 'pouchdb'
+import { onMounted, ref, watch } from "vue"
+import PouchDB from "pouchdb"
+import PouchFind from "pouchdb-find"
 
-// Type des posts
+PouchDB.plugin(PouchFind)
+
 interface Post {
   _id?: string
   post_name: string
   post_content: string
 }
 
-// Bases de données
-const localDB = new PouchDB('infraddonn2_local')
-const remoteDB = new PouchDB('http://admin:1234@localhost:5984/infraddonn2')
+const localDB = new PouchDB("infraddonn2_local")
+const remoteDB = new PouchDB("http://admin:1234@localhost:5984/infraddonn2")
 
-// Refs
 const posts = ref<Post[]>([])
 const formTitle = ref("")
 const formContent = ref("")
+const search = ref("")
 
-// Charger les posts depuis la base locale
 const loadPosts = async () => {
-  try {
-    const result = await localDB.allDocs({ include_docs: true })
-    posts.value = result.rows.map(r => r.doc as Post)
-  } catch (err) {
-    console.error("Erreur loadPosts :", err)
-  }
+  const r = await localDB.allDocs({ include_docs: true })
+  posts.value = r.rows.map(x => x.doc as Post)
 }
 
-// Créer un post dans la base locale
 const createPost = async () => {
   if (!formTitle.value || !formContent.value) return
-
-  const newPost: Post = {
+  await localDB.put({
     _id: "post:" + Date.now(),
     post_name: formTitle.value,
     post_content: formContent.value
-  }
-
-  await localDB.put(newPost)
-  await loadPosts()
-
+  })
   formTitle.value = ""
   formContent.value = ""
+  loadPosts()
 }
 
-// Supprimer un post (locale → sync auto)
 const deletePost = async (id: string) => {
-  try {
-    const doc = await localDB.get(id)
-    await localDB.remove(doc)
-    await loadPosts()
-  } catch (err) {
-    console.error("Erreur deletePost :", err)
-  }
+  const doc = await localDB.get(id)
+  await localDB.remove(doc)
+  loadPosts()
 }
 
-// Réplication locale ↔ distante (continue)
+localDB.createIndex({
+  index: { fields: ["post_name", "post_content"] }
+})
+
+const searchPosts = async () => {
+  if (!search.value) return loadPosts()
+  const r = await localDB.find({
+    selector: {
+      $or: [
+        { post_name: { $regex: search.value } },
+        { post_content: { $regex: search.value } }
+      ]
+    }
+  })
+  posts.value = r.docs as Post[]
+}
+
+watch(search, searchPosts)
+
 const startSync = () => {
-  localDB.sync(remoteDB, {
-    live: true,
-    retry: true
-  })
-  .on('change', () => {
-    console.log("Changement détecté → mise à jour de l'affichage")
-    loadPosts()
-  })
-  .on('error', (err) => {
-    console.error("Erreur de réplication :", err)
-  })
-
-  console.log("Réplication bidirectionnelle activée ✔")
+  localDB
+    .sync(remoteDB, { live: true, retry: true })
+    .on("change", loadPosts)
 }
 
-onMounted(async () => {
-  await loadPosts()
+onMounted(() => {
+  loadPosts()
   startSync()
 })
 </script>
@@ -82,27 +76,19 @@ onMounted(async () => {
 <template>
   <h1>Posts</h1>
 
+  <input v-model="search" type="text" placeholder="Recherche..." style="margin-bottom:20px; width:300px;" />
+
   <h2>Créer un post</h2>
 
-  <form
-    @submit.prevent="createPost"
-    style="display:flex; flex-direction:column; width:300px; gap:10px;"
-  >
-    <input v-model="formTitle" type="text" placeholder="Titre" required />
-    <textarea v-model="formContent" placeholder="Contenu" rows="4" required></textarea>
+  <form @submit.prevent="createPost" style="display:flex; flex-direction:column; width:300px; gap:10px;">
+    <input v-model="formTitle" type="text" placeholder="Titre" />
+    <textarea v-model="formContent" placeholder="Contenu" rows="4"></textarea>
     <button type="submit">Créer un post</button>
   </form>
 
-  <article
-    v-for="post in posts"
-    :key="post._id"
-    style="border:1px solid #ccc; padding:10px; margin:10px 0;"
-  >
-    <h2>{{ post.post_name }}</h2>
-    <p>{{ post.post_content }}</p>
-
-    <button @click="deletePost(post._id!)" style="margin-top:10px;">
-      Supprimer
-    </button>
+  <article v-for="p in posts" :key="p._id" style="border:1px solid #ccc; padding:10px; margin:10px 0;">
+    <h2>{{ p.post_name }}</h2>
+    <p>{{ p.post_content }}</p>
+    <button @click="deletePost(p._id!)">Supprimer</button>
   </article>
 </template>
