@@ -1,143 +1,119 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, ref } from 'vue'
 import PouchDB from 'pouchdb'
 
-declare interface Post {
-  post_name: string;
-  post_content: string;
-  attributes: {
-    creation_date: any;
-  };
+// Type de données
+interface Post {
+  _id?: string
+  post_name: string
+  post_content: string
 }
 
-// Référence à la base de données
-const storage = ref()
-// Données stockées
-const postsData = ref<Post[]>([])
+// Références
+const storage = ref<any>(null)
+const posts = ref<Post[]>([])
+const title = ref("")
+const content = ref("")
 
-// Initialisation de la base de données
-const initDatabase = () => {
-  console.log('=> Connexion à la base de données');
-  const db = new PouchDB('http://admin:1234@localhost:5984/infraddonn2')
-  if (db) {
-    console.log("Connecté à la collection : " + db?.name)
-    storage.value = db
-  } else {
-    console.warn('Echec lors de la connexion à la base de données')
-  }
-}
-
-//base local¨
+// Base locale et distante
 const localDB = new PouchDB('infraddonn2_local')
+const remoteURL = 'http://admin:1234@localhost:5984/infraddonn2'
 
-const syncDatabases = async () => {
-  if (!storage.value) return
-
-  const remoteDB = new PouchDB('http://admin:1234@localhost:5984/infraddonn2')
-
-  try {
-    await localDB.sync(remoteDB, {
-      live: false,      // false = synchronisation ponctuelle
-      retry: true       // retry si problème de connexion
-    })
-    console.log("Synchronisation terminée")
-    await fetchData() // Recharge la vue après la synchro
-  } catch (error) {
-    console.error("Erreur lors de la synchronisation :", error)
-  }
+// Connexion à la base distante
+const initDB = () => {
+  console.log("Connexion à la base distante...")
+  storage.value = new PouchDB(remoteURL)
 }
 
-
-// Récupération des données
-const fetchData = async () => {
-  if (!storage.value) {
-    console.warn('Base de données non initialisée')
-    return
-  }
+// Récupération des posts
+const loadPosts = async () => {
+  if (!storage.value) return
 
   try {
     const result = await storage.value.allDocs({ include_docs: true })
-    postsData.value = result.rows
-      .filter(row => row.doc)
-      .map(row => row.doc as Post)
-    console.log('Données récupérées :', postsData.value)
-  } catch (error) {
-    console.error('Erreur lors de la récupération des données :', error)
+    posts.value = result.rows.map(r => r.doc as Post)
+    console.log("Posts chargés :", posts.value)
+  } catch (err) {
+    console.error("Erreur loadPosts :", err)
   }
 }
 
-// CREATE
+// Création d'un post
 const createPost = async () => {
-  if (!storage.value) return
+  if (!title.value || !content.value || !storage.value) return
 
-  try {
-    await storage.value.get('14852340') // si existe
-    console.log("Le document existe déjà")
-  } catch (err: any) {
-    if (err.status === 404) {
-      // Si existe pas
-      await storage.value.put({
-        _id: '14852340',
-        post_name: "PostCreeavecPUT",
-        post_content: "LECONTENT ECRIT"
-      })
-    } else {
-      console.error("Erreur inattendue :", err)
-    }
+  const newPost: Post = {
+    _id: "post:" + Date.now(),
+    post_name: title.value,
+    post_content: content.value
   }
 
-  await fetchData()
+  await storage.value.put(newPost)
+  await loadPosts()
+
+  title.value = ""
+  content.value = ""
 }
 
-//UPDATE
-const updatePost = async () => {
+// Suppression d'un post (réutilisable)
+const removePost = async (id: string) => {
   if (!storage.value) return
 
   try {
-    const doc = await storage.value.get('14852340')
-    doc.post_content = "Contenu modifié"
-    doc.post_name = "Titre modifié"
-    await storage.value.put(doc)
-
-    await fetchData()
-  } catch (error) {
-    console.error("Erreur en mettant à jour :", error)
-  }
-}
-
-//DELETE
-const deletePost = async () => {
-  if (!storage.value) return
-
-  try {
-    const doc = await storage.value.get('14852340')
+    const doc = await storage.value.get(id)
     await storage.value.remove(doc)
-    await fetchData()
-    console.log("Document supprimé")
-  } catch (error) {
-    console.error("Erreur en supprimant :", error)
+    await loadPosts()
+  } catch (err) {
+    console.error("Erreur removePost :", err)
   }
 }
 
+// Synchronisation local <-> distant
+const syncDB = async () => {
+  try {
+    const remoteDB = new PouchDB(remoteURL)
+    await localDB.sync(remoteDB, { live: false, retry: true })
+    console.log("Synchronisation OK")
+    await loadPosts()
+  } catch (err) {
+    console.error("Erreur syncDB :", err)
+  }
+}
 
 onMounted(async () => {
-  console.log('=> Composant initialisé');
-  initDatabase()
-
-  await createPost()
-  await updatePost()
-  await deletePost()
-  await fetchData()
-});
-
+  initDB()
+  await loadPosts()
+})
 </script>
 
 <template>
-  <h1>Fetch Data</h1>
-  <button @click="createPost">Créer un post démo</button>
-  <button @click="syncDatabases">Synchroniser avec la base distante</button>
-  <article v-for="post in postsData" v-bind:key="(post as any).id">
+  <h1>Posts</h1>
+
+  <h2>Créer un post</h2>
+
+  <form 
+    @submit.prevent="createPost"
+    style="display:flex; flex-direction:column; width:300px; gap:10px;"
+  >
+    <input v-model="title" type="text" placeholder="Titre" required />
+    <textarea v-model="content" placeholder="Contenu" rows="4" required></textarea>
+    <button type="submit">Créer un post</button>
+  </form>
+
+  <button @click="syncDB" style="margin-top:20px;">
+    Synchroniser
+  </button>
+
+  <article
+    v-for="post in posts"
+    :key="post._id"
+    style="border:1px solid #ccc; padding:10px; margin:10px 0;"
+  >
     <h2>{{ post.post_name }}</h2>
     <p>{{ post.post_content }}</p>
+
+    <button @click="removePost(post._id!)" style="margin-top:10px;">
+      Supprimer
+    </button>
   </article>
 </template>
